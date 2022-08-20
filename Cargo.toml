@@ -2,7 +2,13 @@
 name = "field-effect"
 version = "0.1.0"
 edition = "2021"
+description = "an intuitive, high-performance logic simulator/puzzle game"
+license = "GPL-3.0-or-later"
+documentation = "https://docs.rs/field-effect"
+repository = "https://github.com/D3PSI/field-effect"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+gfx = "0.18.2"
+clap = "3.2.17"
