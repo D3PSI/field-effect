@@ -1,5 +1,5 @@
 use clap::{App, Arg, ArgMatches};
-use field_effect::FieldEffectOptions;
+use field_effect::{circuit::circuit::Circuit, FieldEffectOptions};
 use std::error::Error;
 
 const ARG_FILE: &str = "file";
@@ -30,8 +30,6 @@ fn config() -> FieldEffectOptions {
 
 fn main() -> Result<(), Box<dyn Error>> {
     let options = config();
-
-    todo!();
 
     Ok(())
 }

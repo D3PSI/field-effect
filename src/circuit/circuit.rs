@@ -24,7 +24,7 @@ struct LogicGate {
 /// Inputs and outputs are dangling in their respective directions until they are reconciled. A
 /// protocol will be defined for that. In said protocol for each input/output, since every output
 /// is linked to another Circuit's input, one whole channel will be dropped per connection.
-struct CircuitElement<T: Propagatable + Send + Sync> {
+pub struct CircuitElement<T: Propagatable + Send + Sync> {
     inputs: Vec<Wire>,
     outputs: Vec<Wire>,
     circuits: Vec<Box<T>>,
