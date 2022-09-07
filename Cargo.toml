@@ -10,7 +10,11 @@ repository = "https://github.com/D3PSI/field-effect"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-gfx = "0.18.2"
 clap = "3.2.17"
 crossbeam = "0.8.2"
 rayon = "1.5.3"
+winit = "0.26"
+env_logger = "0.9"
+log = "0.4"
+wgpu = "0.13"
+pollster = "0.2"
