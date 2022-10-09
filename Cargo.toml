@@ -9,6 +9,9 @@ repository = "https://github.com/D3PSI/field-effect"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
+[lib]
+crate-type = ["cdylib", "rlib"]
+
 [dependencies]
 clap = "3.2.17"
 crossbeam = "0.8.2"
@@ -18,3 +21,16 @@ env_logger = "0.9"
 log = "0.4"
 wgpu = "0.13"
 pollster = "0.2"
+cfg-if = "1"
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+console_error_panic_hook = "0.1.6"
+console_log = "0.2.0"
+wgpu = { version = "0.13", features = ["webgl"]}
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4.30"
+web-sys = { version = "0.3", features = [
+    "Document",
+        "Window",
+        "Element",
+]}
