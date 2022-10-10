@@ -6,9 +6,6 @@ use std::error::Error;
 
 use pollster;
 
-#[cfg(target_arch = "wasm32")]
-use wasm_bindgen::prelude::*;
-
 const ARG_FILE: &str = "file";
 
 fn args() -> ArgMatches {
