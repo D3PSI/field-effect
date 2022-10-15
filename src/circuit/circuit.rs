@@ -1,8 +1,8 @@
 use crossbeam::channel::{bounded, Receiver, Sender};
 use rayon::{self, Scope};
-use std::error::Error;
+use std::{error::Error, sync::Arc};
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum LogicLevel {
     ZERO = 0,
     ONE = 1,
@@ -14,10 +14,13 @@ pub type Wire = (OutWire, InWire);
 
 /// A circuit component intended to represent only a simple logic gate function with one output,
 /// however this implementation would also allow for more complex logic functions with multiple outputs.
-struct LogicGate {
+struct LogicGate<F>
+where
+    F: Fn(Vec<LogicLevel>) -> Vec<LogicLevel>,
+{
     inputs: Vec<InWire>,
     outputs: Vec<OutWire>,
-    logic: Box<dyn Fn(Vec<LogicLevel>) -> Vec<LogicLevel>>,
+    logic: F,
 }
 
 /// A recursive type to represent a combinational and/or a sequential circuit element.
@@ -57,11 +60,14 @@ pub trait Propagatable {
     fn propagate<'a>(&'a mut self, s: &Scope<'a>) -> Result<(), Box<dyn Error>>;
 }
 
-impl Propagatable for LogicGate {
+impl<F> Propagatable for LogicGate<F>
+where
+    F: Fn(Vec<LogicLevel>) -> Vec<LogicLevel>,
+{
     fn propagate<'a>(&'a mut self, _: &Scope<'a>) -> Result<(), Box<dyn Error>> {
         let mut inp = vec![];
         for input in &self.inputs {
-            inp.push(input.recv()?);
+            inp.push(input.try_recv()?);
         }
 
         let out = (self.logic)(inp);
@@ -89,6 +95,48 @@ impl<T: Propagatable + Send + Sync> Propagatable for CircuitElement<T> {
             }
         }
 
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use std::error::Error;
+
+    use crossbeam::channel::bounded;
+
+    use crate::{LogicLevel, Wire};
+
+    use super::{LogicGate, Propagatable};
+
+    #[test]
+    fn test_and_gate() -> Result<(), Box<dyn Error>> {
+        let input_one: Wire = bounded(1);
+        let input_two: Wire = bounded(1);
+        let mut inputs = Vec::new();
+        inputs.push(input_one.1);
+        inputs.push(input_two.1);
+        let output_one: Wire = bounded(1);
+        let mut outputs = Vec::new();
+        outputs.push(output_one.0);
+        let mut logic_gate = LogicGate {
+            inputs,
+            outputs,
+            logic: |inp| {
+                for i in inp {
+                    if i != LogicLevel::ONE {
+                        return vec![LogicLevel::ZERO];
+                    }
+                }
+                return vec![LogicLevel::ONE];
+            },
+        };
+        input_one.0.send(LogicLevel::ONE).unwrap();
+        input_two.0.send(LogicLevel::ONE).unwrap();
+        rayon::scope(|s| {
+            logic_gate.propagate(s).unwrap();
+        });
+        assert_eq!(output_one.1.recv(), Ok(LogicLevel::ONE));
         Ok(())
     }
 }
