@@ -42,9 +42,9 @@ pub struct Circuit<T: Propagatable + Send + Sync> {
 impl<T: Propagatable + Send + Sync> Circuit<T> {
     /// Computes the next state from the current state. May utilize multiple CPUs to do so using
     /// task parallelism.
-    pub fn compute(&mut self) -> Result<(), Box<dyn Error>> {
+    pub fn compute(&self) -> Result<(), Box<dyn Error>> {
         rayon::scope(|s| {
-            for circuit in self.circuits.iter_mut() {
+            for circuit in self.circuits.iter() {
                 // TODO: figure out how to gracefully handle Result types
                 circuit.propagate(s).unwrap();
             }
@@ -57,17 +57,17 @@ impl<T: Propagatable + Send + Sync> Circuit<T> {
 /// A trait to propagate state computation through circuits. This computation is broken up into
 /// multiple tasks and implemented using task parallelism.
 pub trait Propagatable {
-    fn propagate<'a>(&'a mut self, s: &Scope<'a>) -> Result<(), Box<dyn Error>>;
+    fn propagate<'a>(&'a self, s: &Scope<'a>) -> Result<(), Box<dyn Error>>;
 }
 
 impl<F> Propagatable for LogicGate<F>
 where
     F: Fn(Vec<LogicLevel>) -> Vec<LogicLevel>,
 {
-    fn propagate<'a>(&'a mut self, _: &Scope<'a>) -> Result<(), Box<dyn Error>> {
+    fn propagate<'a>(&'a self, _: &Scope<'a>) -> Result<(), Box<dyn Error>> {
         let mut inp = vec![];
         for input in &self.inputs {
-            inp.push(input.try_recv()?);
+            inp.push(input.recv()?);
         }
 
         let out = (self.logic)(inp);
@@ -81,13 +81,13 @@ where
 }
 
 impl<T: Propagatable + Send + Sync> Propagatable for CircuitElement<T> {
-    fn propagate<'a>(&'a mut self, s: &Scope<'a>) -> Result<(), Box<dyn Error>> {
+    fn propagate<'a>(&'a self, s: &Scope<'a>) -> Result<(), Box<dyn Error>> {
         if self.cutoff {
-            for circuit in self.circuits.iter_mut() {
+            for circuit in self.circuits.iter() {
                 circuit.propagate(s)?;
             }
         } else {
-            for circuit in self.circuits.iter_mut() {
+            for circuit in self.circuits.iter() {
                 s.spawn(|s| {
                     // TODO: figure out how to gracefully handle Result types
                     circuit.propagate(s).unwrap();
@@ -105,38 +105,67 @@ mod test {
 
     use crossbeam::channel::bounded;
 
-    use crate::{LogicLevel, Wire};
+    use crate::{Circuit, LogicLevel, Wire};
 
-    use super::{LogicGate, Propagatable};
+    use super::LogicGate;
 
     #[test]
     fn test_and_gate() -> Result<(), Box<dyn Error>> {
-        let input_one: Wire = bounded(1);
-        let input_two: Wire = bounded(1);
-        let mut inputs = Vec::new();
-        inputs.push(input_one.1);
-        inputs.push(input_two.1);
-        let output_one: Wire = bounded(1);
-        let mut outputs = Vec::new();
-        outputs.push(output_one.0);
-        let mut logic_gate = LogicGate {
-            inputs,
-            outputs,
-            logic: |inp| {
-                for i in inp {
-                    if i != LogicLevel::ONE {
-                        return vec![LogicLevel::ZERO];
-                    }
+        let logic = |inp| {
+            for i in inp {
+                if i != LogicLevel::ONE {
+                    return vec![LogicLevel::ZERO];
                 }
-                return vec![LogicLevel::ONE];
-            },
+            }
+            return vec![LogicLevel::ONE];
         };
-        input_one.0.send(LogicLevel::ONE).unwrap();
-        input_two.0.send(LogicLevel::ONE).unwrap();
-        rayon::scope(|s| {
-            logic_gate.propagate(s).unwrap();
+        let input_one_one: Wire = bounded(1);
+        let input_one_two: Wire = bounded(1);
+        let mut inputs_one = Vec::new();
+        inputs_one.push(input_one_one.1);
+        inputs_one.push(input_one_two.1);
+        let output_one: Wire = bounded(1);
+        let mut outputs_one = Vec::new();
+        outputs_one.push(output_one.0);
+        let logic_gate_one = Box::new(LogicGate {
+            inputs: inputs_one,
+            outputs: outputs_one,
+            logic,
         });
-        assert_eq!(output_one.1.recv(), Ok(LogicLevel::ONE));
+        let input_two_one: Wire = bounded(1);
+        let input_two_two: Wire = bounded(1);
+        let mut inputs_two = Vec::new();
+        inputs_two.push(input_two_one.1);
+        inputs_two.push(input_two_two.1);
+        let output_two: Wire = bounded(1);
+        let mut outputs_two = Vec::new();
+        outputs_two.push(output_two.0);
+        let logic_gate_two = Box::new(LogicGate {
+            inputs: inputs_two,
+            outputs: outputs_two,
+            logic,
+        });
+        let inputs_three = vec![output_one.1, output_two.1];
+        let output_three: Wire = bounded(1);
+        let mut outputs_three = Vec::new();
+        outputs_three.push(output_three.0);
+        let logic_gate_three = Box::new(LogicGate {
+            inputs: inputs_three,
+            outputs: outputs_three,
+            logic,
+        });
+        let circuit = Circuit {
+            circuits: vec![logic_gate_one, logic_gate_two, logic_gate_three],
+        };
+        // send all inputs first
+        input_one_one.0.send(LogicLevel::ONE).unwrap();
+        input_one_two.0.send(LogicLevel::ONE).unwrap();
+        input_two_one.0.send(LogicLevel::ONE).unwrap();
+        input_two_two.0.send(LogicLevel::ONE).unwrap();
+        // dataflow should sort out the rest of the propagation
+        circuit.compute().unwrap();
+        assert_eq!(output_three.1.recv(), Ok(LogicLevel::ONE));
+
         Ok(())
     }
 }
