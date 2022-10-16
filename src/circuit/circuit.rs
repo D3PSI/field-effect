@@ -17,11 +17,8 @@ pub type Wire = (OutWire, InWire);
 struct LogicGate {
     inputs: Vec<InWire>,
     outputs: Vec<OutWire>,
-    logic: Box<dyn Fn(Vec<LogicLevel>) -> Vec<LogicLevel>>,
+    logic: Box<dyn Fn(Vec<LogicLevel>) -> Vec<LogicLevel> + Send + Sync>,
 }
-
-unsafe impl Sync for LogicGate {}
-unsafe impl Send for LogicGate {}
 
 impl LogicGate {
     pub fn and(inputs: Vec<InWire>, outputs: Vec<OutWire>) -> LogicGate {
