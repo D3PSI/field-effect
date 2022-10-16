@@ -1,6 +1,6 @@
-use crossbeam::channel::{bounded, Receiver, Sender};
+use crossbeam::channel::{Receiver, Sender};
 use rayon::{self, Scope};
-use std::{error::Error, sync::Arc};
+use std::error::Error;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum LogicLevel {
@@ -14,13 +14,31 @@ pub type Wire = (OutWire, InWire);
 
 /// A circuit component intended to represent only a simple logic gate function with one output,
 /// however this implementation would also allow for more complex logic functions with multiple outputs.
-struct LogicGate<F>
-where
-    F: Fn(Vec<LogicLevel>) -> Vec<LogicLevel>,
-{
+struct LogicGate {
     inputs: Vec<InWire>,
     outputs: Vec<OutWire>,
-    logic: F,
+    logic: Box<dyn Fn(Vec<LogicLevel>) -> Vec<LogicLevel>>,
+}
+
+unsafe impl Sync for LogicGate {}
+unsafe impl Send for LogicGate {}
+
+impl LogicGate {
+    pub fn and(inputs: Vec<InWire>, outputs: Vec<OutWire>) -> LogicGate {
+        let logic = Box::new(|inp| {
+            for i in inp {
+                if i != LogicLevel::ONE {
+                    return vec![LogicLevel::ZERO];
+                }
+            }
+            return vec![LogicLevel::ONE];
+        });
+        LogicGate {
+            inputs,
+            outputs,
+            logic,
+        }
+    }
 }
 
 /// A recursive type to represent a combinational and/or a sequential circuit element.
@@ -60,10 +78,7 @@ pub trait Propagatable {
     fn propagate<'a>(&'a self, s: &Scope<'a>) -> Result<(), Box<dyn Error>>;
 }
 
-impl<F> Propagatable for LogicGate<F>
-where
-    F: Fn(Vec<LogicLevel>) -> Vec<LogicLevel>,
-{
+impl Propagatable for LogicGate {
     fn propagate<'a>(&'a self, _: &Scope<'a>) -> Result<(), Box<dyn Error>> {
         let mut inp = vec![];
         for input in &self.inputs {
@@ -111,14 +126,6 @@ mod test {
 
     #[test]
     fn test_and_gate() -> Result<(), Box<dyn Error>> {
-        let logic = |inp| {
-            for i in inp {
-                if i != LogicLevel::ONE {
-                    return vec![LogicLevel::ZERO];
-                }
-            }
-            return vec![LogicLevel::ONE];
-        };
         let input_one_one: Wire = bounded(1);
         let input_one_two: Wire = bounded(1);
         let mut inputs_one = Vec::new();
@@ -127,11 +134,7 @@ mod test {
         let output_one: Wire = bounded(1);
         let mut outputs_one = Vec::new();
         outputs_one.push(output_one.0);
-        let logic_gate_one = Box::new(LogicGate {
-            inputs: inputs_one,
-            outputs: outputs_one,
-            logic,
-        });
+        let logic_gate_one = Box::new(LogicGate::and(inputs_one, outputs_one));
         let input_two_one: Wire = bounded(1);
         let input_two_two: Wire = bounded(1);
         let mut inputs_two = Vec::new();
@@ -140,20 +143,12 @@ mod test {
         let output_two: Wire = bounded(1);
         let mut outputs_two = Vec::new();
         outputs_two.push(output_two.0);
-        let logic_gate_two = Box::new(LogicGate {
-            inputs: inputs_two,
-            outputs: outputs_two,
-            logic,
-        });
+        let logic_gate_two = Box::new(LogicGate::and(inputs_two, outputs_two));
         let inputs_three = vec![output_one.1, output_two.1];
         let output_three: Wire = bounded(1);
         let mut outputs_three = Vec::new();
         outputs_three.push(output_three.0);
-        let logic_gate_three = Box::new(LogicGate {
-            inputs: inputs_three,
-            outputs: outputs_three,
-            logic,
-        });
+        let logic_gate_three = Box::new(LogicGate::and(inputs_three, outputs_three));
         let circuit = Circuit {
             circuits: vec![logic_gate_one, logic_gate_two, logic_gate_three],
         };
@@ -164,6 +159,7 @@ mod test {
         input_two_two.0.send(LogicLevel::ONE).unwrap();
         // dataflow should sort out the rest of the propagation
         circuit.compute().unwrap();
+
         assert_eq!(output_three.1.recv(), Ok(LogicLevel::ONE));
 
         Ok(())
