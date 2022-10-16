@@ -68,22 +68,26 @@ impl LogicGate {
         }
     }
 
-    // /// Constructs a new NOT gate with the given inputs
-    // pub fn not(inputs: Vec<InWire>, outputs: Vec<OutWire>) -> LogicGate {
-    //     let logic = Box::new(move |inp| -> Vec<LogicLevel> {
-    //         let mut out = Vec::new();
-    //         for i in inp {
-    //             out.push(-i);
-    //         }
+    /// Constructs a new NOT gate with the given inputs
+    pub fn not(inputs: Vec<InWire>, outputs: Vec<OutWire>) -> LogicGate {
+        let logic = Box::new(move |inp| {
+            let mut out = vec![];
+            for i in inp {
+                let mut negated: LogicLevel = LogicLevel::ONE;
+                if i == LogicLevel::ONE {
+                    negated = LogicLevel::ZERO;
+                }
 
-    //         out
-    //     });
-    //     LogicGate {
-    //         inputs,
-    //         outputs,
-    //         logic,
-    //     }
-    // }
+                out.push(negated);
+            }
+            out
+        });
+        LogicGate {
+            inputs,
+            outputs,
+            logic,
+        }
+    }
 }
 
 /// A recursive type to represent a combinational and/or a sequential circuit element.
