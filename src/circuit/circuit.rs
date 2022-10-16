@@ -1,11 +1,22 @@
 use crossbeam::channel::{Receiver, Sender};
 use rayon::{self, Scope};
-use std::error::Error;
+use std::{error::Error, ops::Neg};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum LogicLevel {
     ZERO = 0,
     ONE = 1,
+}
+
+impl Neg for LogicLevel {
+    type Output = Self;
+    fn neg(self) -> Self::Output {
+        if self == Self::ZERO {
+            return Self::ONE;
+        }
+
+        Self::ZERO
+    }
 }
 
 pub type InWire = Receiver<LogicLevel>;
@@ -14,21 +25,23 @@ pub type Wire = (OutWire, InWire);
 
 /// A circuit component intended to represent only a simple logic gate function with one output,
 /// however this implementation would also allow for more complex logic functions with multiple outputs.
-struct LogicGate {
+pub struct LogicGate {
     inputs: Vec<InWire>,
     outputs: Vec<OutWire>,
     logic: Box<dyn Fn(Vec<LogicLevel>) -> Vec<LogicLevel> + Send + Sync>,
 }
 
 impl LogicGate {
+    /// Constructs a new AND gate with the given inputs
     pub fn and(inputs: Vec<InWire>, outputs: Vec<OutWire>) -> LogicGate {
-        let logic = Box::new(|inp| {
+        let num_outputs = outputs.len();
+        let logic = Box::new(move |inp| {
             for i in inp {
                 if i != LogicLevel::ONE {
-                    return vec![LogicLevel::ZERO];
+                    return vec![LogicLevel::ZERO; num_outputs];
                 }
             }
-            return vec![LogicLevel::ONE];
+            return vec![LogicLevel::ONE; num_outputs];
         });
         LogicGate {
             inputs,
@@ -36,6 +49,41 @@ impl LogicGate {
             logic,
         }
     }
+
+    /// Constructs a new OR gate with the given inputs
+    pub fn or(inputs: Vec<InWire>, outputs: Vec<OutWire>) -> LogicGate {
+        let num_outputs = outputs.len();
+        let logic = Box::new(move |inp| {
+            for i in inp {
+                if i == LogicLevel::ONE {
+                    return vec![LogicLevel::ONE; num_outputs];
+                }
+            }
+            return vec![LogicLevel::ZERO; num_outputs];
+        });
+        LogicGate {
+            inputs,
+            outputs,
+            logic,
+        }
+    }
+
+    // /// Constructs a new NOT gate with the given inputs
+    // pub fn not(inputs: Vec<InWire>, outputs: Vec<OutWire>) -> LogicGate {
+    //     let logic = Box::new(move |inp| -> Vec<LogicLevel> {
+    //         let mut out = Vec::new();
+    //         for i in inp {
+    //             out.push(-i);
+    //         }
+
+    //         out
+    //     });
+    //     LogicGate {
+    //         inputs,
+    //         outputs,
+    //         logic,
+    //     }
+    // }
 }
 
 /// A recursive type to represent a combinational and/or a sequential circuit element.
@@ -57,13 +105,14 @@ pub struct Circuit<T: Propagatable + Send + Sync> {
 impl<T: Propagatable + Send + Sync> Circuit<T> {
     /// Computes the next state from the current state. May utilize multiple CPUs to do so using
     /// task parallelism.
-    pub fn compute(&self) -> Result<(), Box<dyn Error>> {
-        rayon::scope(|s| {
+    pub fn compute(&self) -> Result<(), Box<dyn Error + Send + Sync>> {
+        rayon::scope(|s| -> Result<(), Box<dyn Error + Send + Sync>> {
             for circuit in self.circuits.iter() {
-                // TODO: figure out how to gracefully handle Result types
-                circuit.propagate(s).unwrap();
+                circuit.propagate(s)?;
             }
-        });
+
+            Ok(())
+        })?;
 
         Ok(())
     }
@@ -72,11 +121,11 @@ impl<T: Propagatable + Send + Sync> Circuit<T> {
 /// A trait to propagate state computation through circuits. This computation is broken up into
 /// multiple tasks and implemented using task parallelism.
 pub trait Propagatable {
-    fn propagate<'a>(&'a self, s: &Scope<'a>) -> Result<(), Box<dyn Error>>;
+    fn propagate<'a>(&'a self, s: &Scope<'a>) -> Result<(), Box<dyn Error + Send + Sync>>;
 }
 
 impl Propagatable for LogicGate {
-    fn propagate<'a>(&'a self, _: &Scope<'a>) -> Result<(), Box<dyn Error>> {
+    fn propagate<'a>(&'a self, _: &Scope<'a>) -> Result<(), Box<dyn Error + Send + Sync>> {
         let mut inp = vec![];
         for input in &self.inputs {
             inp.push(input.recv()?);
@@ -93,15 +142,15 @@ impl Propagatable for LogicGate {
 }
 
 impl<T: Propagatable + Send + Sync> Propagatable for CircuitElement<T> {
-    fn propagate<'a>(&'a self, s: &Scope<'a>) -> Result<(), Box<dyn Error>> {
+    fn propagate<'a>(&'a self, s: &Scope<'a>) -> Result<(), Box<dyn Error + Send + Sync>> {
         if self.cutoff {
             for circuit in self.circuits.iter() {
                 circuit.propagate(s)?;
             }
         } else {
             for circuit in self.circuits.iter() {
+                // TODO: figure out how to gracefully handle result types
                 s.spawn(|s| {
-                    // TODO: figure out how to gracefully handle Result types
                     circuit.propagate(s).unwrap();
                 });
             }
@@ -122,7 +171,7 @@ mod test {
     use super::LogicGate;
 
     #[test]
-    fn test_and_gate() -> Result<(), Box<dyn Error>> {
+    fn combinational_and_gates() -> Result<(), Box<dyn Error>> {
         let input_one_one: Wire = bounded(1);
         let input_one_two: Wire = bounded(1);
         let mut inputs_one = Vec::new();
@@ -160,5 +209,11 @@ mod test {
         assert_eq!(output_three.1.recv(), Ok(LogicLevel::ONE));
 
         Ok(())
+    }
+
+    #[test]
+    fn logic_level_negation() {
+        assert_eq!(-LogicLevel::ZERO, LogicLevel::ONE);
+        assert_eq!(-LogicLevel::ONE, LogicLevel::ZERO);
     }
 }
