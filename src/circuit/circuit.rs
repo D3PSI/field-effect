@@ -132,7 +132,7 @@ impl Propagatable for LogicGate {
     fn propagate<'a>(&'a self, _: &Scope<'a>) -> Result<(), Box<dyn Error + Send + Sync>> {
         let mut inp = vec![];
         for input in &self.inputs {
-            inp.push(input.recv()?);
+            inp.push(input.try_recv().unwrap_or(LogicLevel::ZERO));
         }
 
         let out = (self.logic)(inp);
