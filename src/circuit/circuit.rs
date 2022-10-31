@@ -1,6 +1,6 @@
 use crossbeam::channel::{Receiver, Sender};
 use rayon::{self, Scope};
-use std::{error::Error, ops::Neg};
+use std::{error::Error, ops::Neg, sync::mpsc};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum LogicLevel {
@@ -95,8 +95,8 @@ impl LogicGate {
 /// protocol will be defined for that. In said protocol for each input/output, since every output
 /// is linked to another Circuit's input, one whole channel will be dropped per connection.
 pub struct CircuitElement<T: Propagatable + Send + Sync> {
-    inputs: Vec<Wire>,
-    outputs: Vec<Wire>,
+    inputs: Vec<InWire>,
+    outputs: Vec<OutWire>,
     circuits: Vec<Box<T>>,
     cutoff: bool,
 }
@@ -111,8 +111,14 @@ impl<T: Propagatable + Send + Sync> Circuit<T> {
     /// task parallelism.
     pub fn compute(&self) -> Result<(), Box<dyn Error + Send + Sync>> {
         rayon::scope(|s| -> Result<(), Box<dyn Error + Send + Sync>> {
-            for circuit in self.circuits.iter() {
-                circuit.propagate(s)?;
+            let mut changed = false;
+            while !changed {
+                changed = false;
+                for circuit in self.circuits.iter() {
+                    if circuit.propagate(s)? {
+                        changed = true;
+                    }
+                }
             }
 
             Ok(())
@@ -125,42 +131,53 @@ impl<T: Propagatable + Send + Sync> Circuit<T> {
 /// A trait to propagate state computation through circuits. This computation is broken up into
 /// multiple tasks and implemented using task parallelism.
 pub trait Propagatable {
-    fn propagate<'a>(&'a self, s: &Scope<'a>) -> Result<(), Box<dyn Error + Send + Sync>>;
+    fn propagate<'a>(&'a self, s: &Scope<'a>) -> Result<bool, Box<dyn Error + Send + Sync>>;
 }
 
 impl Propagatable for LogicGate {
-    fn propagate<'a>(&'a self, _: &Scope<'a>) -> Result<(), Box<dyn Error + Send + Sync>> {
+    fn propagate<'a>(&'a self, _: &Scope<'a>) -> Result<bool, Box<dyn Error + Send + Sync>> {
         let mut inp = vec![];
         for input in &self.inputs {
             inp.push(input.try_recv().unwrap_or(LogicLevel::ZERO));
         }
 
+        let prev = inp.clone();
         let out = (self.logic)(inp);
 
         for (i, output) in self.outputs.iter().enumerate() {
             output.send(out[i])?;
         }
 
-        Ok(())
+        Ok(out != prev)
     }
 }
 
 impl<T: Propagatable + Send + Sync> Propagatable for CircuitElement<T> {
-    fn propagate<'a>(&'a self, s: &Scope<'a>) -> Result<(), Box<dyn Error + Send + Sync>> {
+    fn propagate<'a>(&'a self, s: &Scope<'a>) -> Result<bool, Box<dyn Error + Send + Sync>> {
         if self.cutoff {
+            let mut changed = false;
             for circuit in self.circuits.iter() {
-                circuit.propagate(s)?;
+                if circuit.propagate(s)? {
+                    changed = true;
+                }
             }
-        } else {
-            for circuit in self.circuits.iter() {
-                // TODO: figure out how to gracefully handle result types
-                s.spawn(|s| {
-                    circuit.propagate(s).unwrap();
-                });
-            }
+
+            return Ok(changed);
+        }
+        let (tx, rx) = mpsc::channel();
+        for circuit in self.circuits.iter() {
+            let tx_closure = tx.clone();
+            s.spawn(move |s| {
+                tx_closure.send(circuit.propagate(s).unwrap()).unwrap();
+            });
+        }
+        drop(tx);
+        let mut changed = false;
+        for _i in 0..self.circuits.len() {
+            changed &= rx.recv()?;
         }
 
-        Ok(())
+        Ok(changed)
     }
 }
 
@@ -170,7 +187,7 @@ mod test {
 
     use crossbeam::channel::bounded;
 
-    use crate::{Circuit, LogicLevel, Wire};
+    use crate::{Circuit, CircuitElement, LogicLevel, Wire};
 
     use super::LogicGate;
 
@@ -199,8 +216,14 @@ mod test {
         let mut outputs_three = Vec::new();
         outputs_three.push(output_three.0);
         let logic_gate_three = Box::new(LogicGate::and(inputs_three, outputs_three));
-        let circuit = Circuit {
+        let element = Box::new(CircuitElement {
+            inputs: vec![],
+            outputs: vec![],
             circuits: vec![logic_gate_one, logic_gate_two, logic_gate_three],
+            cutoff: true,
+        });
+        let circuit = Circuit {
+            circuits: vec![element],
         };
         // send all inputs first
         input_one_one.0.send(LogicLevel::ONE).unwrap();
