@@ -1,16 +1,21 @@
 //! This library root file contains basic definitions of working with logical circuits
 
 use num::Integer;
+use serde::{Deserialize, Serialize};
 use std::{
     cell::RefCell,
+    collections::HashMap,
     error::Error,
-    fmt::Display,
+    fmt::{Debug, Display},
+    fs::File,
+    io::{BufReader, BufWriter, Read, Write},
     ops::{BitAnd, BitOr, BitXor, Neg},
     path::PathBuf,
-    rc::{Rc, Weak},
+    rc::Rc,
 };
+use uuid::Uuid;
 
-#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy, Serialize, Deserialize)]
 pub enum LogicLevel {
     Zero = 0,
     One = 1,
@@ -82,18 +87,76 @@ impl Neg for LogicLevel {
     }
 }
 
-pub trait CircuitElement {
+#[typetag::serde(tag = "type")]
+pub trait CircuitElement: std::fmt::Debug {
     /// returns true if there have not been state updates (the element has settled on a state)
     fn propagate(&mut self) -> Result<bool, Box<dyn Error>>;
+
+    fn elements(&mut self) -> &mut Vec<Box<dyn CircuitElement>>;
+
+    fn add_element(&mut self, element: Box<dyn CircuitElement>);
+
+    fn inputs(&mut self) -> &mut Vec<WireLink>;
+
+    fn outputs(&mut self) -> &mut Vec<WireLink>;
+
+    fn add_input(&mut self, input: WireLink);
+
+    fn add_output(&mut self, output: WireLink);
+
+    fn deduplicate(&mut self, map: &mut HashMap<Uuid, WireLink>) {
+        for element in self.elements() {
+            element.deduplicate(map);
+        }
+        let outputs = self.outputs().clone();
+        self.outputs().clear();
+        for output in outputs {
+            let uuid = (*output).borrow().uuid();
+            if map.contains_key(&uuid) {
+                self.add_output(map.get(&uuid).unwrap().clone());
+            } else {
+                map.insert(uuid, output.clone());
+                self.add_output(output);
+            }
+        }
+        let inputs = self.inputs().clone();
+        self.inputs().clear();
+        for input in inputs {
+            let uuid = (*input).borrow().uuid();
+            if map.contains_key(&uuid) {
+                self.add_input(map.get(&uuid).unwrap().clone());
+            } else {
+                map.insert(uuid, input.clone());
+                self.add_input(input);
+            }
+        }
+    }
 }
 
+#[derive(Debug, Serialize, Deserialize)]
 pub struct Wire {
+    uuid: Uuid,
+    number: Option<usize>,
     value: LogicLevel,
 }
 
 impl Wire {
     pub fn new(value: LogicLevel) -> Rc<RefCell<Wire>> {
-        Rc::new(RefCell::new(Wire { value }))
+        let uuid = Uuid::new_v4();
+        let number = None;
+        Rc::new(RefCell::new(Wire {
+            uuid,
+            number,
+            value,
+        }))
+    }
+
+    pub fn uuid(&self) -> Uuid {
+        self.uuid
+    }
+
+    pub fn number(&mut self, number: usize) {
+        self.number = Some(number)
     }
 
     pub fn write(&mut self, value: LogicLevel) {
@@ -111,15 +174,13 @@ pub type WireRef = RefCell<Wire>;
 /// Wraps a `WireRef` in an `Rc` - represents a mutable reference to a wire
 pub type WireLink = Rc<WireRef>;
 
-/// Wraps a `WireRef` in a `Weak` - represent an immutable reference to a wire
-pub type WireWeak = Weak<WireRef>;
-
+#[derive(Debug, Serialize, Deserialize)]
 pub struct Circuit {
     // a circuit owns all of its constituent circuits
     elements: Vec<Box<dyn CircuitElement>>,
     // inputs and outputs are modeled using a wire (which itself is a circuit element that is owned
     // by the circuit)
-    inputs: Vec<WireWeak>,
+    inputs: Vec<WireLink>,
     outputs: Vec<WireLink>,
 }
 
@@ -137,20 +198,9 @@ impl Circuit {
     pub fn new() -> Box<Circuit> {
         Box::new(Circuit::default())
     }
-
-    pub fn add_element(&mut self, element: Box<dyn CircuitElement>) {
-        self.elements.push(element);
-    }
-
-    pub fn add_input(&mut self, input: &WireLink) {
-        self.inputs.push(Rc::downgrade(input));
-    }
-
-    pub fn add_output(&mut self, output: WireLink) {
-        self.outputs.push(output);
-    }
 }
 
+#[typetag::serde]
 impl CircuitElement for Circuit {
     fn propagate(&mut self) -> Result<bool, Box<dyn Error>> {
         let mut settled = true;
@@ -162,18 +212,46 @@ impl CircuitElement for Circuit {
 
         Ok(settled)
     }
+
+    fn elements(&mut self) -> &mut Vec<Box<dyn CircuitElement>> {
+        &mut self.elements
+    }
+
+    fn add_element(&mut self, element: Box<dyn CircuitElement>) {
+        self.elements.push(element)
+    }
+
+    fn inputs(&mut self) -> &mut Vec<WireLink> {
+        &mut self.inputs
+    }
+
+    fn outputs(&mut self) -> &mut Vec<WireLink> {
+        &mut self.outputs
+    }
+
+    fn add_input(&mut self, input: WireLink) {
+        (*input).borrow_mut().number(self.inputs().len());
+        self.inputs.push(input);
+    }
+
+    fn add_output(&mut self, output: WireLink) {
+        (*output).borrow_mut().number(self.inputs().len());
+        self.outputs.push(output);
+    }
 }
 
-#[derive(PartialEq, Eq, Clone, Copy)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy, Serialize, Deserialize)]
 pub enum LogicFunction {
     AND,
     OR,
     NOT,
 }
 
+#[derive(Debug, Serialize, Deserialize)]
 pub struct LogicGate {
     function: LogicFunction,
-    inputs: Vec<WireWeak>,
+    elements: Vec<Box<dyn CircuitElement>>,
+    inputs: Vec<WireLink>,
     outputs: Vec<WireLink>,
 }
 
@@ -181,6 +259,7 @@ impl Default for LogicGate {
     fn default() -> Self {
         LogicGate {
             function: LogicFunction::AND,
+            elements: vec![],
             inputs: vec![],
             outputs: vec![],
         }
@@ -193,29 +272,15 @@ impl LogicGate {
         gate.function = function;
         Box::new(gate)
     }
-
-    pub fn add_input(&mut self, input: &WireLink) {
-        self.inputs.push(Rc::downgrade(input));
-    }
-
-    pub fn add_output(&mut self, output: WireLink) {
-        self.outputs.push(output);
-    }
 }
 
+#[typetag::serde]
 impl CircuitElement for LogicGate {
     fn propagate(&mut self) -> Result<bool, Box<dyn Error>> {
         let inputs: Vec<LogicLevel> = self
             .inputs
             .iter()
-            .map(|i| i.upgrade())
-            .map(|i| {
-                if let Some(wire) = i {
-                    return (*wire).borrow().read();
-                } else {
-                    return LogicLevel::Zero;
-                }
-            })
+            .map(|i| RefCell::borrow(&*i).read())
             .collect();
         let value = match self.function {
             LogicFunction::AND => inputs.into_iter().reduce(|l, r| l & r),
@@ -223,12 +288,11 @@ impl CircuitElement for LogicGate {
             LogicFunction::NOT => inputs.into_iter().reduce(|l, r| l | r).map(LogicLevel::neg),
         };
         let value = value.unwrap_or(LogicLevel::Zero);
-        let old_value = self
-            .outputs
-            .iter_mut()
-            .map(|o| o.borrow().read())
-            .reduce(|l, r| l | r)
-            .unwrap_or(LogicLevel::Zero);
+        let mut old_value = LogicLevel::Zero;
+        for output in self.outputs.iter() {
+            let v = RefCell::borrow(&*output);
+            old_value = old_value | v.read();
+        }
         for output in self.outputs.iter_mut() {
             let mut output = RefCell::borrow_mut(&*output);
             output.write(value);
@@ -236,16 +300,53 @@ impl CircuitElement for LogicGate {
 
         Ok(old_value == value)
     }
+
+    fn elements(&mut self) -> &mut Vec<Box<dyn CircuitElement>> {
+        &mut self.elements
+    }
+
+    fn add_element(&mut self, _element: Box<dyn CircuitElement>) {}
+
+    fn inputs(&mut self) -> &mut Vec<WireLink> {
+        &mut self.inputs
+    }
+
+    fn outputs(&mut self) -> &mut Vec<WireLink> {
+        &mut self.outputs
+    }
+
+    fn add_input(&mut self, input: WireLink) {
+        (*input).borrow_mut().number(self.inputs().len());
+        self.inputs.push(input);
+    }
+
+    fn add_output(&mut self, output: WireLink) {
+        (*output).borrow_mut().number(self.inputs().len());
+        self.outputs.push(output);
+    }
 }
 
 #[allow(dead_code)]
-pub fn load_circuit(_circuit_file: &PathBuf) -> Result<Circuit, Box<dyn Error>> {
-    todo!();
+pub fn load_circuit(path: &PathBuf) -> Result<Box<dyn CircuitElement>, Box<dyn Error>> {
+    let mut buf = String::new();
+    BufReader::new(File::open(path)?).read_to_string(&mut buf)?;
+
+    let mut circuit: Circuit = serde_json::from_slice(buf.as_bytes())?;
+    let mut map = HashMap::new();
+    circuit.deduplicate(&mut map);
+
+    Ok(Box::new(circuit))
 }
 
 #[allow(dead_code)]
-pub fn store_circuit(_circuit: &Circuit) -> Result<(), Box<dyn Error>> {
-    todo!();
+pub fn store_circuit(
+    path: &PathBuf,
+    circuit: Box<dyn CircuitElement>,
+) -> Result<(), Box<dyn Error>> {
+    let mut file = BufWriter::new(File::create(path)?);
+    write!(file, "{}", serde_json::to_string(&circuit)?)?;
+
+    Ok(())
 }
 
 pub fn simulate(mut circuit: Box<dyn CircuitElement>) -> Result<(), Box<dyn Error>> {
@@ -260,9 +361,12 @@ pub fn simulate(mut circuit: Box<dyn CircuitElement>) -> Result<(), Box<dyn Erro
 
 #[cfg(test)]
 mod tests {
-    use std::error::Error;
+    use std::{error::Error, fs::remove_file, path::PathBuf};
 
-    use crate::{simulate, Circuit, CircuitElement, LogicFunction, LogicGate, LogicLevel, Wire};
+    use crate::{
+        load_circuit, simulate, store_circuit, Circuit, CircuitElement, LogicFunction, LogicGate,
+        LogicLevel, Wire,
+    };
 
     fn test_input(
         gate: LogicFunction,
@@ -272,14 +376,14 @@ mod tests {
         let mut gate = LogicGate::new(gate);
         let input_one = Wire::new(input_one.into());
         let output = Wire::new(LogicLevel::Zero);
-        gate.add_input(&input_one);
+        gate.add_input(input_one);
         gate.add_output(output.clone());
 
-        assert_eq!(output.borrow().read(), LogicLevel::Zero);
+        assert_eq!((*output).borrow().read(), LogicLevel::Zero);
 
         simulate(gate)?;
 
-        assert_eq!(output.borrow().read(), output_value.into());
+        assert_eq!((*output).borrow().read(), output_value.into());
 
         Ok(())
     }
@@ -294,15 +398,15 @@ mod tests {
         let input_one = Wire::new(input_one.into());
         let input_two = Wire::new(input_two.into());
         let output = Wire::new(LogicLevel::Zero);
-        gate.add_input(&input_one);
-        gate.add_input(&input_two);
+        gate.add_input(input_one);
+        gate.add_input(input_two);
         gate.add_output(output.clone());
 
-        assert_eq!(output.borrow().read(), LogicLevel::Zero);
+        assert_eq!((*output).borrow().read(), LogicLevel::Zero);
 
         simulate(gate)?;
 
-        assert_eq!(output.borrow().read(), output_value.into());
+        assert_eq!((*output).borrow().read(), output_value.into());
 
         Ok(())
     }
@@ -347,47 +451,56 @@ mod tests {
         let output_one = Wire::new(LogicLevel::Zero);
         let output_two = Wire::new(LogicLevel::Zero);
         let output_three = Wire::new(LogicLevel::Zero);
-        first_and_gate.add_input(&input_one);
+        first_and_gate.add_input(input_one.clone());
         first_and_gate.add_output(output_one.clone());
-        second_and_gate.add_input(&input_two);
-        second_and_gate.add_input(&output_one);
+        second_and_gate.add_input(input_two.clone());
+        second_and_gate.add_input(output_one.clone());
         second_and_gate.add_output(output_two.clone());
-        not_gate.add_input(&output_two);
+        not_gate.add_input(output_two.clone());
         not_gate.add_output(output_three.clone());
-        first_and_gate.add_input(&output_three);
+        first_and_gate.add_input(output_three.clone());
 
-        circuit.add_input(&input_one);
-        circuit.add_input(&input_two);
+        circuit.add_input(input_one.clone());
+        circuit.add_input(input_two.clone());
         circuit.add_output(output_two.clone());
         circuit.add_element(first_and_gate);
         circuit.add_element(second_and_gate);
         circuit.add_element(not_gate);
 
-        assert_eq!(input_one.borrow().read(), LogicLevel::One);
-        assert_eq!(input_two.borrow().read(), LogicLevel::One);
-        assert_eq!(output_one.borrow().read(), LogicLevel::Zero);
-        assert_eq!(output_two.borrow().read(), LogicLevel::Zero);
-        assert_eq!(output_three.borrow().read(), LogicLevel::Zero);
+        assert_eq!((*input_one).borrow().read(), LogicLevel::One);
+        assert_eq!((*input_two).borrow().read(), LogicLevel::One);
+        assert_eq!((*output_one).borrow().read(), LogicLevel::Zero);
+        assert_eq!((*output_two).borrow().read(), LogicLevel::Zero);
+        assert_eq!((*output_three).borrow().read(), LogicLevel::Zero);
         circuit.propagate()?;
-        assert_eq!(input_one.borrow().read(), LogicLevel::One);
-        assert_eq!(input_two.borrow().read(), LogicLevel::One);
-        assert_eq!(output_one.borrow().read(), LogicLevel::Zero);
-        assert_eq!(output_two.borrow().read(), LogicLevel::Zero);
-        assert_eq!(output_three.borrow().read(), LogicLevel::One);
+        assert_eq!((*input_one).borrow().read(), LogicLevel::One);
+        assert_eq!((*input_two).borrow().read(), LogicLevel::One);
+        assert_eq!((*output_one).borrow().read(), LogicLevel::Zero);
+        assert_eq!((*output_two).borrow().read(), LogicLevel::Zero);
+        assert_eq!((*output_three).borrow().read(), LogicLevel::One);
         for _i in 0..1000 {
             circuit.propagate()?;
-            assert_eq!(input_one.borrow().read(), LogicLevel::One);
-            assert_eq!(input_two.borrow().read(), LogicLevel::One);
-            assert_eq!(output_one.borrow().read(), LogicLevel::One);
-            assert_eq!(output_two.borrow().read(), LogicLevel::One);
-            assert_eq!(output_three.borrow().read(), LogicLevel::Zero);
+            assert_eq!((*input_one).borrow().read(), LogicLevel::One);
+            assert_eq!((*input_two).borrow().read(), LogicLevel::One);
+            assert_eq!((*output_one).borrow().read(), LogicLevel::One);
+            assert_eq!((*output_two).borrow().read(), LogicLevel::One);
+            assert_eq!((*output_three).borrow().read(), LogicLevel::Zero);
             circuit.propagate()?;
-            assert_eq!(input_one.borrow().read(), LogicLevel::One);
-            assert_eq!(input_two.borrow().read(), LogicLevel::One);
-            assert_eq!(output_one.borrow().read(), LogicLevel::Zero);
-            assert_eq!(output_two.borrow().read(), LogicLevel::Zero);
-            assert_eq!(output_three.borrow().read(), LogicLevel::One);
+            assert_eq!((*input_one).borrow().read(), LogicLevel::One);
+            assert_eq!((*input_two).borrow().read(), LogicLevel::One);
+            assert_eq!((*output_one).borrow().read(), LogicLevel::Zero);
+            assert_eq!((*output_two).borrow().read(), LogicLevel::Zero);
+            assert_eq!((*output_three).borrow().read(), LogicLevel::One);
         }
+
+        let path = &PathBuf::from("./serde.json");
+        store_circuit(path, *Box::new(circuit))?;
+        let mut circuit = load_circuit(path)?;
+        for _i in 0..1000 {
+            circuit.propagate()?;
+        }
+
+        remove_file(path)?;
 
         Ok(())
     }
