@@ -96,9 +96,9 @@ pub trait CircuitElement: std::fmt::Debug {
 
     fn add_element(&mut self, element: Box<dyn CircuitElement>);
 
-    fn inputs(&mut self) -> &mut Vec<WireLink>;
+    fn inputs(&mut self) -> &mut HashMap<usize, WireLink>;
 
-    fn outputs(&mut self) -> &mut Vec<WireLink>;
+    fn outputs(&mut self) -> &mut HashMap<usize, WireLink>;
 
     fn add_input(&mut self, input: WireLink);
 
@@ -111,23 +111,23 @@ pub trait CircuitElement: std::fmt::Debug {
         let outputs = self.outputs().clone();
         self.outputs().clear();
         for output in outputs {
-            let uuid = (*output).borrow().uuid();
+            let uuid = (*output.1).borrow().uuid();
             if map.contains_key(&uuid) {
                 self.add_output(map.get(&uuid).unwrap().clone());
             } else {
-                map.insert(uuid, output.clone());
-                self.add_output(output);
+                map.insert(uuid, output.1.clone());
+                self.add_output(output.1);
             }
         }
         let inputs = self.inputs().clone();
         self.inputs().clear();
         for input in inputs {
-            let uuid = (*input).borrow().uuid();
+            let uuid = (*input.1).borrow().uuid();
             if map.contains_key(&uuid) {
                 self.add_input(map.get(&uuid).unwrap().clone());
             } else {
-                map.insert(uuid, input.clone());
-                self.add_input(input);
+                map.insert(uuid, input.1.clone());
+                self.add_input(input.1);
             }
         }
     }
@@ -136,27 +136,17 @@ pub trait CircuitElement: std::fmt::Debug {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Wire {
     uuid: Uuid,
-    number: Option<usize>,
     value: LogicLevel,
 }
 
 impl Wire {
     pub fn new(value: LogicLevel) -> Rc<RefCell<Wire>> {
         let uuid = Uuid::new_v4();
-        let number = None;
-        Rc::new(RefCell::new(Wire {
-            uuid,
-            number,
-            value,
-        }))
+        Rc::new(RefCell::new(Wire { uuid, value }))
     }
 
     pub fn uuid(&self) -> Uuid {
         self.uuid
-    }
-
-    pub fn number(&mut self, number: usize) {
-        self.number = Some(number)
     }
 
     pub fn write(&mut self, value: LogicLevel) {
@@ -180,16 +170,16 @@ pub struct Circuit {
     elements: Vec<Box<dyn CircuitElement>>,
     // inputs and outputs are modeled using a wire (which itself is a circuit element that is owned
     // by the circuit)
-    inputs: Vec<WireLink>,
-    outputs: Vec<WireLink>,
+    inputs: HashMap<usize, WireLink>,
+    outputs: HashMap<usize, WireLink>,
 }
 
 impl Default for Circuit {
     fn default() -> Self {
         Circuit {
             elements: vec![],
-            inputs: vec![],
-            outputs: vec![],
+            inputs: HashMap::new(),
+            outputs: HashMap::new(),
         }
     }
 }
@@ -221,22 +211,22 @@ impl CircuitElement for Circuit {
         self.elements.push(element)
     }
 
-    fn inputs(&mut self) -> &mut Vec<WireLink> {
+    fn inputs(&mut self) -> &mut HashMap<usize, WireLink> {
         &mut self.inputs
     }
 
-    fn outputs(&mut self) -> &mut Vec<WireLink> {
+    fn outputs(&mut self) -> &mut HashMap<usize, WireLink> {
         &mut self.outputs
     }
 
     fn add_input(&mut self, input: WireLink) {
-        (*input).borrow_mut().number(self.inputs().len());
-        self.inputs.push(input);
+        let sz = self.inputs().len();
+        self.inputs.insert(sz, input);
     }
 
     fn add_output(&mut self, output: WireLink) {
-        (*output).borrow_mut().number(self.inputs().len());
-        self.outputs.push(output);
+        let sz = self.outputs.len();
+        self.outputs.insert(sz, output);
     }
 }
 
@@ -251,8 +241,8 @@ pub enum LogicFunction {
 pub struct LogicGate {
     function: LogicFunction,
     elements: Vec<Box<dyn CircuitElement>>,
-    inputs: Vec<WireLink>,
-    outputs: Vec<WireLink>,
+    inputs: HashMap<usize, WireLink>,
+    outputs: HashMap<usize, WireLink>,
 }
 
 impl Default for LogicGate {
@@ -260,8 +250,8 @@ impl Default for LogicGate {
         LogicGate {
             function: LogicFunction::AND,
             elements: vec![],
-            inputs: vec![],
-            outputs: vec![],
+            inputs: HashMap::new(),
+            outputs: HashMap::new(),
         }
     }
 }
@@ -280,7 +270,7 @@ impl CircuitElement for LogicGate {
         let inputs: Vec<LogicLevel> = self
             .inputs
             .iter()
-            .map(|i| RefCell::borrow(&*i).read())
+            .map(|i| RefCell::borrow(&*i.1).read())
             .collect();
         let value = match self.function {
             LogicFunction::AND => inputs.into_iter().reduce(|l, r| l & r),
@@ -290,11 +280,11 @@ impl CircuitElement for LogicGate {
         let value = value.unwrap_or(LogicLevel::Zero);
         let mut old_value = LogicLevel::Zero;
         for output in self.outputs.iter() {
-            let v = RefCell::borrow(&*output);
+            let v = RefCell::borrow(&*output.1);
             old_value = old_value | v.read();
         }
         for output in self.outputs.iter_mut() {
-            let mut output = RefCell::borrow_mut(&*output);
+            let mut output = RefCell::borrow_mut(&*output.1);
             output.write(value);
         }
 
@@ -307,22 +297,22 @@ impl CircuitElement for LogicGate {
 
     fn add_element(&mut self, _element: Box<dyn CircuitElement>) {}
 
-    fn inputs(&mut self) -> &mut Vec<WireLink> {
+    fn inputs(&mut self) -> &mut HashMap<usize, WireLink> {
         &mut self.inputs
     }
 
-    fn outputs(&mut self) -> &mut Vec<WireLink> {
+    fn outputs(&mut self) -> &mut HashMap<usize, WireLink> {
         &mut self.outputs
     }
 
     fn add_input(&mut self, input: WireLink) {
-        (*input).borrow_mut().number(self.inputs().len());
-        self.inputs.push(input);
+        let sz = self.inputs().len();
+        self.inputs.insert(sz, input);
     }
 
     fn add_output(&mut self, output: WireLink) {
-        (*output).borrow_mut().number(self.inputs().len());
-        self.outputs.push(output);
+        let sz = self.outputs().len();
+        self.outputs.insert(sz, output);
     }
 }
 
@@ -496,8 +486,21 @@ mod tests {
         let path = &PathBuf::from("./serde.json");
         store_circuit(path, *Box::new(circuit))?;
         let mut circuit = load_circuit(path)?;
+        assert_eq!(
+            (*circuit.outputs().get(&0).unwrap()).borrow().read(),
+            LogicLevel::Zero
+        );
         for _i in 0..1000 {
             circuit.propagate()?;
+            assert_eq!(
+                (*circuit.outputs().get(&0).unwrap()).borrow().read(),
+                LogicLevel::One
+            );
+            circuit.propagate()?;
+            assert_eq!(
+                (*circuit.outputs().get(&0).unwrap()).borrow().read(),
+                LogicLevel::Zero
+            );
         }
 
         remove_file(path)?;

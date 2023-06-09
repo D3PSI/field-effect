@@ -1,4 +1,4 @@
-use std::{error::Error, fs::remove_file, path::PathBuf};
+use std::{error::Error, path::PathBuf};
 
 use clap::Parser;
 
@@ -43,8 +43,6 @@ fn main() -> Result<(), Box<dyn Error>> {
     store_circuit(path, *Box::new(circuit))?;
     let circuit = load_circuit(path)?;
     dbg!(&circuit);
-
-    remove_file(path)?;
 
     Ok(())
 }
