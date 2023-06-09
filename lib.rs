@@ -3,15 +3,38 @@
 use std::{
     cell::RefCell,
     error::Error,
+    fmt::Display,
     ops::{BitAnd, BitOr, BitXor, Neg},
     path::PathBuf,
     rc::{Rc, Weak},
 };
 
-#[derive(PartialEq, Eq, Clone, Copy)]
-enum LogicLevel {
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub enum LogicLevel {
     Zero = 0,
     One = 1,
+}
+
+impl From<usize> for LogicLevel {
+    fn from(val: usize) -> Self {
+        if val == 0 {
+            return LogicLevel::Zero;
+        }
+        LogicLevel::One
+    }
+}
+
+impl Display for LogicLevel {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{}",
+            match self {
+                Self::Zero => 0,
+                Self::One => 1,
+            }
+        )
+    }
 }
 
 impl BitAnd for LogicLevel {
@@ -58,31 +81,31 @@ impl Neg for LogicLevel {
     }
 }
 
-trait CircuitElement {
+pub trait CircuitElement {
     /// returns true if there have not been state updates (the element has settled on a state)
     fn propagate(&mut self) -> Result<bool, Box<dyn Error>>;
 }
 
 pub struct Wire {
     value: LogicLevel,
-    input: LogicLevel,
 }
 
 impl CircuitElement for Wire {
     fn propagate(&mut self) -> Result<bool, Box<dyn Error>> {
-        let settled = self.value == self.input;
-        self.value = self.input;
-
-        Ok(settled)
+        Ok(true)
     }
 }
 
 impl Wire {
-    fn write(&mut self, value: LogicLevel) {
-        self.input = value;
+    pub fn new(value: LogicLevel) -> Rc<RefCell<Wire>> {
+        Rc::new(RefCell::new(Wire { value }))
     }
 
-    fn read(&self) -> LogicLevel {
+    pub fn write(&mut self, value: LogicLevel) {
+        self.value = value;
+    }
+
+    pub fn read(&self) -> LogicLevel {
         self.value
     }
 }
@@ -105,6 +128,30 @@ pub struct Circuit {
     outputs: Vec<WireLink>,
 }
 
+impl Default for Circuit {
+    fn default() -> Self {
+        Circuit {
+            elements: vec![],
+            inputs: vec![],
+            outputs: vec![],
+        }
+    }
+}
+
+impl Circuit {
+    pub fn add_element(&mut self, element: Box<dyn CircuitElement>) {
+        self.elements.push(element);
+    }
+
+    pub fn add_input(&mut self, input: WireWeak) {
+        self.inputs.push(input);
+    }
+
+    pub fn add_output(&mut self, output: WireLink) {
+        self.outputs.push(output);
+    }
+}
+
 impl CircuitElement for Circuit {
     fn propagate(&mut self) -> Result<bool, Box<dyn Error>> {
         let mut settled = true;
@@ -119,7 +166,7 @@ impl CircuitElement for Circuit {
 }
 
 #[derive(PartialEq, Eq, Clone, Copy)]
-enum LogicFunction {
+pub enum LogicFunction {
     AND,
     OR,
     NOT,
@@ -129,6 +176,24 @@ pub struct LogicGate {
     function: LogicFunction,
     inputs: Vec<WireWeak>,
     outputs: Vec<WireLink>,
+}
+
+impl LogicGate {
+    pub fn new(function: LogicFunction) -> LogicGate {
+        LogicGate {
+            function,
+            inputs: vec![],
+            outputs: vec![],
+        }
+    }
+
+    pub fn add_input(&mut self, input: WireWeak) {
+        self.inputs.push(input);
+    }
+
+    pub fn add_output(&mut self, output: WireLink) {
+        self.outputs.push(output);
+    }
 }
 
 impl CircuitElement for LogicGate {
@@ -157,9 +222,10 @@ impl CircuitElement for LogicGate {
             .map(|o| o.borrow().read())
             .reduce(|l, r| l | r)
             .unwrap_or(LogicLevel::Zero);
-        self.outputs
-            .iter_mut()
-            .for_each(|o| o.borrow_mut().write(value));
+        for output in self.outputs.iter_mut() {
+            let mut output = RefCell::borrow_mut(&*output);
+            output.write(value);
+        }
 
         Ok(old_value == value)
     }
@@ -173,7 +239,7 @@ pub fn store_circuit(circuit: &Circuit) -> Result<(), Box<dyn Error>> {
     todo!();
 }
 
-pub fn simulate_circuit(circuit: &mut Circuit) -> Result<(), Box<dyn Error>> {
+pub fn simulate_circuit(mut circuit: Box<dyn CircuitElement>) -> Result<(), Box<dyn Error>> {
     loop {
         if circuit.propagate()? {
             break;
@@ -181,4 +247,82 @@ pub fn simulate_circuit(circuit: &mut Circuit) -> Result<(), Box<dyn Error>> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{error::Error, rc::Rc};
+
+    use crate::{simulate_circuit, LogicFunction, LogicGate, LogicLevel, Wire};
+
+    fn test_gate_input(
+        gate: LogicFunction,
+        input_one: usize,
+        output_value: usize,
+    ) -> Result<(), Box<dyn Error>> {
+        let mut gate = LogicGate::new(gate);
+        let input_one = Wire::new(input_one.into());
+        let output = Wire::new(LogicLevel::Zero);
+        gate.add_input(Rc::downgrade(&input_one));
+        gate.add_output(output.clone());
+
+        assert_eq!(output.borrow().read(), LogicLevel::Zero);
+
+        simulate_circuit(Box::new(gate))?;
+
+        assert_eq!(output.borrow().read(), output_value.into());
+
+        Ok(())
+    }
+
+    fn test_gate_inputs(
+        gate: LogicFunction,
+        input_one: usize,
+        input_two: usize,
+        output_value: usize,
+    ) -> Result<(), Box<dyn Error>> {
+        let mut gate = LogicGate::new(gate);
+        let input_one = Wire::new(input_one.into());
+        let input_two = Wire::new(input_two.into());
+        let output = Wire::new(LogicLevel::Zero);
+        gate.add_input(Rc::downgrade(&input_one));
+        gate.add_input(Rc::downgrade(&input_two));
+        gate.add_output(output.clone());
+
+        assert_eq!(output.borrow().read(), LogicLevel::Zero);
+
+        simulate_circuit(Box::new(gate))?;
+
+        assert_eq!(output.borrow().read(), output_value.into());
+
+        Ok(())
+    }
+
+    #[test]
+    fn and_gate() -> Result<(), Box<dyn Error>> {
+        test_gate_inputs(LogicFunction::AND, 0, 0, 0)?;
+        test_gate_inputs(LogicFunction::AND, 0, 1, 0)?;
+        test_gate_inputs(LogicFunction::AND, 1, 0, 0)?;
+        test_gate_inputs(LogicFunction::AND, 1, 1, 1)?;
+
+        Ok(())
+    }
+
+    #[test]
+    fn or_gate() -> Result<(), Box<dyn Error>> {
+        test_gate_inputs(LogicFunction::OR, 0, 0, 0)?;
+        test_gate_inputs(LogicFunction::OR, 0, 1, 1)?;
+        test_gate_inputs(LogicFunction::OR, 1, 0, 1)?;
+        test_gate_inputs(LogicFunction::OR, 1, 1, 1)?;
+
+        Ok(())
+    }
+
+    #[test]
+    fn not_gate() -> Result<(), Box<dyn Error>> {
+        test_gate_input(LogicFunction::NOT, 0, 1)?;
+        test_gate_input(LogicFunction::NOT, 1, 0)?;
+
+        Ok(())
+    }
 }
