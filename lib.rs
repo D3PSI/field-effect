@@ -139,12 +139,16 @@ impl Default for Circuit {
 }
 
 impl Circuit {
+    pub fn new() -> Box<Circuit> {
+        Box::new(Circuit::default())
+    }
+
     pub fn add_element(&mut self, element: Box<dyn CircuitElement>) {
         self.elements.push(element);
     }
 
-    pub fn add_input(&mut self, input: WireWeak) {
-        self.inputs.push(input);
+    pub fn add_input(&mut self, input: &WireLink) {
+        self.inputs.push(Rc::downgrade(input));
     }
 
     pub fn add_output(&mut self, output: WireLink) {
@@ -178,17 +182,25 @@ pub struct LogicGate {
     outputs: Vec<WireLink>,
 }
 
-impl LogicGate {
-    pub fn new(function: LogicFunction) -> LogicGate {
+impl Default for LogicGate {
+    fn default() -> Self {
         LogicGate {
-            function,
+            function: LogicFunction::AND,
             inputs: vec![],
             outputs: vec![],
         }
     }
+}
 
-    pub fn add_input(&mut self, input: WireWeak) {
-        self.inputs.push(input);
+impl LogicGate {
+    pub fn new(function: LogicFunction) -> Box<LogicGate> {
+        let mut gate = LogicGate::default();
+        gate.function = function;
+        Box::new(gate)
+    }
+
+    pub fn add_input(&mut self, input: &WireLink) {
+        self.inputs.push(Rc::downgrade(input));
     }
 
     pub fn add_output(&mut self, output: WireLink) {
@@ -231,15 +243,17 @@ impl CircuitElement for LogicGate {
     }
 }
 
-pub fn load_circuit(circuit_file: &PathBuf) -> Result<Circuit, Box<dyn Error>> {
+#[allow(dead_code)]
+pub fn load_circuit(_circuit_file: &PathBuf) -> Result<Circuit, Box<dyn Error>> {
     todo!();
 }
 
-pub fn store_circuit(circuit: &Circuit) -> Result<(), Box<dyn Error>> {
+#[allow(dead_code)]
+pub fn store_circuit(_circuit: &Circuit) -> Result<(), Box<dyn Error>> {
     todo!();
 }
 
-pub fn simulate_circuit(mut circuit: Box<dyn CircuitElement>) -> Result<(), Box<dyn Error>> {
+pub fn simulate(mut circuit: Box<dyn CircuitElement>) -> Result<(), Box<dyn Error>> {
     loop {
         if circuit.propagate()? {
             break;
@@ -251,11 +265,11 @@ pub fn simulate_circuit(mut circuit: Box<dyn CircuitElement>) -> Result<(), Box<
 
 #[cfg(test)]
 mod tests {
-    use std::{error::Error, rc::Rc};
+    use std::error::Error;
 
-    use crate::{simulate_circuit, LogicFunction, LogicGate, LogicLevel, Wire};
+    use crate::{simulate, Circuit, CircuitElement, LogicFunction, LogicGate, LogicLevel, Wire};
 
-    fn test_gate_input(
+    fn test_input(
         gate: LogicFunction,
         input_one: usize,
         output_value: usize,
@@ -263,19 +277,19 @@ mod tests {
         let mut gate = LogicGate::new(gate);
         let input_one = Wire::new(input_one.into());
         let output = Wire::new(LogicLevel::Zero);
-        gate.add_input(Rc::downgrade(&input_one));
+        gate.add_input(&input_one);
         gate.add_output(output.clone());
 
         assert_eq!(output.borrow().read(), LogicLevel::Zero);
 
-        simulate_circuit(Box::new(gate))?;
+        simulate(gate)?;
 
         assert_eq!(output.borrow().read(), output_value.into());
 
         Ok(())
     }
 
-    fn test_gate_inputs(
+    fn test_inputs(
         gate: LogicFunction,
         input_one: usize,
         input_two: usize,
@@ -285,13 +299,13 @@ mod tests {
         let input_one = Wire::new(input_one.into());
         let input_two = Wire::new(input_two.into());
         let output = Wire::new(LogicLevel::Zero);
-        gate.add_input(Rc::downgrade(&input_one));
-        gate.add_input(Rc::downgrade(&input_two));
+        gate.add_input(&input_one);
+        gate.add_input(&input_two);
         gate.add_output(output.clone());
 
         assert_eq!(output.borrow().read(), LogicLevel::Zero);
 
-        simulate_circuit(Box::new(gate))?;
+        simulate(gate)?;
 
         assert_eq!(output.borrow().read(), output_value.into());
 
@@ -300,28 +314,85 @@ mod tests {
 
     #[test]
     fn and_gate() -> Result<(), Box<dyn Error>> {
-        test_gate_inputs(LogicFunction::AND, 0, 0, 0)?;
-        test_gate_inputs(LogicFunction::AND, 0, 1, 0)?;
-        test_gate_inputs(LogicFunction::AND, 1, 0, 0)?;
-        test_gate_inputs(LogicFunction::AND, 1, 1, 1)?;
+        test_inputs(LogicFunction::AND, 0, 0, 0)?;
+        test_inputs(LogicFunction::AND, 0, 1, 0)?;
+        test_inputs(LogicFunction::AND, 1, 0, 0)?;
+        test_inputs(LogicFunction::AND, 1, 1, 1)?;
 
         Ok(())
     }
 
     #[test]
     fn or_gate() -> Result<(), Box<dyn Error>> {
-        test_gate_inputs(LogicFunction::OR, 0, 0, 0)?;
-        test_gate_inputs(LogicFunction::OR, 0, 1, 1)?;
-        test_gate_inputs(LogicFunction::OR, 1, 0, 1)?;
-        test_gate_inputs(LogicFunction::OR, 1, 1, 1)?;
+        test_inputs(LogicFunction::OR, 0, 0, 0)?;
+        test_inputs(LogicFunction::OR, 0, 1, 1)?;
+        test_inputs(LogicFunction::OR, 1, 0, 1)?;
+        test_inputs(LogicFunction::OR, 1, 1, 1)?;
 
         Ok(())
     }
 
     #[test]
     fn not_gate() -> Result<(), Box<dyn Error>> {
-        test_gate_input(LogicFunction::NOT, 0, 1)?;
-        test_gate_input(LogicFunction::NOT, 1, 0)?;
+        test_input(LogicFunction::NOT, 0, 1)?;
+        test_input(LogicFunction::NOT, 1, 0)?;
+
+        Ok(())
+    }
+
+    #[test]
+    fn clock_test() -> Result<(), Box<dyn Error>> {
+        let mut circuit = Circuit::new();
+
+        let mut first_and_gate = LogicGate::new(LogicFunction::AND);
+        let mut second_and_gate = LogicGate::new(LogicFunction::AND);
+        let mut not_gate = LogicGate::new(LogicFunction::NOT);
+        let input_one = Wire::new(LogicLevel::One);
+        let input_two = Wire::new(LogicLevel::One);
+        let output_one = Wire::new(LogicLevel::Zero);
+        let output_two = Wire::new(LogicLevel::Zero);
+        let output_three = Wire::new(LogicLevel::Zero);
+        first_and_gate.add_input(&input_one);
+        first_and_gate.add_output(output_one.clone());
+        second_and_gate.add_input(&input_two);
+        second_and_gate.add_input(&output_one);
+        second_and_gate.add_output(output_two.clone());
+        not_gate.add_input(&output_two);
+        not_gate.add_output(output_three.clone());
+        first_and_gate.add_input(&output_three);
+
+        circuit.add_input(&input_one);
+        circuit.add_input(&input_two);
+        circuit.add_output(output_two.clone());
+        circuit.add_element(first_and_gate);
+        circuit.add_element(second_and_gate);
+        circuit.add_element(not_gate);
+
+        assert_eq!(input_one.borrow().read(), LogicLevel::One);
+        assert_eq!(input_two.borrow().read(), LogicLevel::One);
+        assert_eq!(output_one.borrow().read(), LogicLevel::Zero);
+        assert_eq!(output_two.borrow().read(), LogicLevel::Zero);
+        assert_eq!(output_three.borrow().read(), LogicLevel::Zero);
+        circuit.propagate()?;
+        assert_eq!(input_one.borrow().read(), LogicLevel::One);
+        assert_eq!(input_two.borrow().read(), LogicLevel::One);
+        assert_eq!(output_one.borrow().read(), LogicLevel::Zero);
+        assert_eq!(output_two.borrow().read(), LogicLevel::Zero);
+        assert_eq!(output_three.borrow().read(), LogicLevel::One);
+        for _i in 0..1000 {
+            circuit.propagate()?;
+            assert_eq!(input_one.borrow().read(), LogicLevel::One);
+            assert_eq!(input_two.borrow().read(), LogicLevel::One);
+            assert_eq!(output_one.borrow().read(), LogicLevel::One);
+            assert_eq!(output_two.borrow().read(), LogicLevel::One);
+            assert_eq!(output_three.borrow().read(), LogicLevel::Zero);
+            circuit.propagate()?;
+            assert_eq!(input_one.borrow().read(), LogicLevel::One);
+            assert_eq!(input_two.borrow().read(), LogicLevel::One);
+            assert_eq!(output_one.borrow().read(), LogicLevel::Zero);
+            assert_eq!(output_two.borrow().read(), LogicLevel::Zero);
+            assert_eq!(output_three.borrow().read(), LogicLevel::One);
+        }
 
         Ok(())
     }
