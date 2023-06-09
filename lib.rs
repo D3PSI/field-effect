@@ -1,5 +1,6 @@
 //! This library root file contains basic definitions of working with logical circuits
 
+use num::Integer;
 use std::{
     cell::RefCell,
     error::Error,
@@ -15,9 +16,9 @@ pub enum LogicLevel {
     One = 1,
 }
 
-impl From<usize> for LogicLevel {
-    fn from(val: usize) -> Self {
-        if val == 0 {
+impl<T: Integer> From<T> for LogicLevel {
+    fn from(val: T) -> Self {
+        if val == T::zero() {
             return LogicLevel::Zero;
         }
         LogicLevel::One
@@ -88,12 +89,6 @@ pub trait CircuitElement {
 
 pub struct Wire {
     value: LogicLevel,
-}
-
-impl CircuitElement for Wire {
-    fn propagate(&mut self) -> Result<bool, Box<dyn Error>> {
-        Ok(true)
-    }
 }
 
 impl Wire {
