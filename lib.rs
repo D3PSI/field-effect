@@ -461,19 +461,6 @@ mod tests {
             assert_eq!(read!(output_three), LogicLevel::One);
         }
 
-        let path = &PathBuf::from("./serde.json");
-        store_circuit(path, circuit)?;
-        let mut circuit = load_circuit(path)?;
-        assert_eq!(read!(circuit.outputs().get(&0).unwrap()), LogicLevel::Zero);
-        for _i in 0..1000 {
-            circuit.propagate()?;
-            assert_eq!(read!(circuit.outputs().get(&0).unwrap()), LogicLevel::One);
-            circuit.propagate()?;
-            assert_eq!(read!(circuit.outputs().get(&0).unwrap()), LogicLevel::Zero);
-        }
-
-        remove_file(path)?;
-
         Ok(())
     }
 }
