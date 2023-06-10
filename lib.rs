@@ -1,5 +1,7 @@
 //! This library root file contains basic definitions of working with logical circuits
 
+mod macros;
+
 use num::Integer;
 use serde::{Deserialize, Serialize};
 use std::{
@@ -261,11 +263,7 @@ impl LogicGate {
 #[typetag::serde]
 impl CircuitElement for LogicGate {
     fn propagate(&mut self) -> Result<bool, Box<dyn Error>> {
-        let inputs: Vec<LogicLevel> = self
-            .inputs
-            .iter()
-            .map(|i| RefCell::borrow(&*i.1).read())
-            .collect();
+        let inputs: Vec<LogicLevel> = self.inputs.iter().map(|i| read!(i.1)).collect();
         let value = match self.function {
             LogicFunction::AND => inputs.into_iter().reduce(|l, r| l & r),
             LogicFunction::OR => inputs.into_iter().reduce(|l, r| l | r),
@@ -329,19 +327,13 @@ pub fn simulate(mut circuit: Box<dyn CircuitElement>) -> Result<(), Box<dyn Erro
     Ok(())
 }
 
-macro_rules! read {
-    ($v:expr) => {
-        (*$v).borrow().read()
-    };
-}
-
 #[cfg(test)]
 mod tests {
     use std::{error::Error, fs::remove_file, path::PathBuf};
 
     use crate::{
-        load_circuit, simulate, store_circuit, Circuit, CircuitElement, LogicFunction, LogicGate,
-        LogicLevel, Wire,
+        load_circuit, read, simulate, store_circuit, Circuit, CircuitElement, LogicFunction,
+        LogicGate, LogicLevel, Wire,
     };
 
     fn test_input(
@@ -470,7 +462,7 @@ mod tests {
         }
 
         let path = &PathBuf::from("./serde.json");
-        store_circuit(path, *Box::new(circuit))?;
+        store_circuit(path, circuit)?;
         let mut circuit = load_circuit(path)?;
         assert_eq!(read!(circuit.outputs().get(&0).unwrap()), LogicLevel::Zero);
         for _i in 0..1000 {
